@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Central de Deudores – Consulta BCRA</title>
+<style>
+  :root { --bg:#f5f6f8; --card:#fff; --txt:#1c2330; --mut:#667085; --brd:#d9dde5; --pri:#1f5fbf; --ok:#1a7f4b; --warn:#b26a00; --bad:#c0392b; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#12161d; --card:#1b212b; --txt:#e6e9ef; --mut:#98a2b3; --brd:#2e3643; --pri:#5b9bff; --ok:#4cc38a; --warn:#e0a040; --bad:#ef7a6c; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: system-ui, Segoe UI, Roboto, sans-serif; background:var(--bg); color:var(--txt); }
+  main { max-width: 960px; margin: 0 auto; padding: 24px 16px 48px; }
+  h1 { font-size: 1.5rem; margin: 0 0 4px; }
+  .sub { color: var(--mut); margin: 0 0 20px; }
+  .card { background:var(--card); border:1px solid var(--brd); border-radius:12px; padding:16px; margin-bottom:16px; }
+  form { display:flex; gap:12px; flex-wrap:wrap; align-items:flex-end; }
+  label { display:flex; flex-direction:column; font-size:.85rem; color:var(--mut); gap:4px; }
+  input, select, button { font: inherit; padding: 10px 12px; border-radius:8px; border:1px solid var(--brd); background:var(--bg); color:var(--txt); }
+  input { width: 200px; letter-spacing: .05em; }
+  button { background:var(--pri); color:#fff; border:none; cursor:pointer; font-weight:600; }
+  button:disabled { opacity:.6; cursor:wait; }
+  .msg { padding:12px 14px; border-radius:8px; border:1px solid var(--brd); }
+  .msg.err { color:var(--bad); border-color:var(--bad); }
+  .msg.warn { color:var(--warn); border-color:var(--warn); margin-bottom:12px; }
+  .scroll { overflow-x:auto; }
+  table { width:100%; border-collapse:collapse; font-size:.92rem; }
+  th, td { text-align:left; padding:8px 10px; border-bottom:1px solid var(--brd); white-space:nowrap; }
+  th { color:var(--mut); font-weight:600; font-size:.8rem; text-transform:uppercase; }
+  td.num { text-align:right; font-variant-numeric: tabular-nums; }
+  .sit { display:inline-block; min-width:1.6em; text-align:center; border-radius:6px; padding:1px 6px; font-weight:700; color:#fff; }
+  .s1 { background:var(--ok); } .s2 { background:#8aa400; } .s3 { background:var(--warn); } .s4 { background:#d0662a; } .s5 { background:var(--bad); }
+  .tag { font-size:.75rem; border:1px solid var(--warn); color:var(--warn); border-radius:6px; padding:0 6px; margin-right:4px; }
+  h2 { font-size:1.05rem; margin:0 0 8px; }
+  h3 { font-size:.95rem; margin:16px 0 6px; color:var(--mut); }
+  .foot { color:var(--mut); font-size:.8rem; margin-top:12px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Central de Deudores</h1>
+  <p class="sub">Consulta por CUIT / CUIL / CDI a la API pública del BCRA.</p>
+
+  <div class="card">
+    <form id="f">
+      <label>CUIT / CUIL / CDI
+        <input id="cuit" inputmode="numeric" maxlength="13" placeholder="20-12345678-6" autofocus required>
+      </label>
+      <label>Consulta
+        <select id="tipo">
+          <option value="deudas">Deudas (último período)</option>
+          <option value="historicas">Históricas (24 meses)</option>
+          <option value="cheques">Cheques rechazados</option>
+        </select>
+      </label>
+      <button id="btn" type="submit">Consultar</button>
+    </form>
+  </div>
+
+  <div id="out"></div>
+
+  <p class="foot">Fuente: Banco Central de la República Argentina (BCRA). Montos en miles de pesos (deudas) y en pesos (cheques).
+  Su difusión no implica conformidad del BCRA. Uso informativo; no se permite uso comercial sin autorización del BCRA
+  (<a href="https://www.bcra.gob.ar/aviso-legal/" target="_blank" rel="noopener">Aviso legal</a>).</p>
+</main>
+
+<script>
+const SIT = {1:"Normal",2:"Seguimiento especial / Riesgo bajo",3:"Con problemas / Riesgo medio",4:"Alto riesgo de insolvencia / Riesgo alto",5:"Irrecuperable"};
+const out = document.getElementById("out");
+
+function el(tag, attrs = {}, ...kids) {
+  const n = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (k === "class") n.className = v; else n.setAttribute(k, v);
+  }
+  for (const k of kids) n.append(k instanceof Node ? k : document.createTextNode(k ?? ""));
+  return n;
+}
+const fmt = v => v == null ? "—" : Number(v).toLocaleString("es-AR", {maximumFractionDigits: 2});
+const periodo = p => p.length === 6 ? p.slice(4) + "/" + p.slice(0, 4) : p;
+
+function table(heads, rows) {
+  const t = el("table");
+  t.append(el("thead", {}, el("tr", {}, ...heads.map(h => el("th", {}, h)))));
+  const tb = el("tbody");
+  rows.forEach(r => tb.append(el("tr", {}, ...r)));
+  t.append(tb);
+  return el("div", {class: "scroll"}, t);
+}
+const cell = (v, cls) => el("td", cls ? {class: cls} : {}, v);
+
+function sitBadge(s) {
+  const b = el("span", {class: "sit s" + s, title: SIT[s] || ""}, String(s));
+  return el("td", {}, b, " " + (SIT[s] || ""));
+}
+function flags(e) {
+  const td = el("td");
+  const map = {refinanciaciones:"Refinanciación", recategorizacionOblig:"Recateg. obligatoria", situacionJuridica:"Situación jurídica",
+               irrecDisposicionTecnica:"Irrec. disp. técnica", enRevision:"En revisión", procesoJud:"Proceso judicial"};
+  let any = false;
+  for (const [k, label] of Object.entries(map)) if (e[k]) { td.append(el("span", {class: "tag"}, label)); any = true; }
+  if (!any) td.append("—");
+  return td;
+}
+
+function renderPeriodos(res, tipo) {
+  const card = el("div", {class: "card"});
+  card.append(el("h2", {}, res.denominacion || "(sin denominación)"));
+  card.append(el("div", {class: "sub"}, "Identificación: " + res.identificacion));
+  const periodos = res.periodos || [];
+  if (!periodos.length) card.append(el("div", {class: "msg"}, "Sin períodos informados."));
+  periodos.forEach(p => {
+    card.append(el("h3", {}, "Período " + periodo(p.periodo)));
+    const heads = ["Entidad", "Situación", "Monto (miles $)"];
+    if (tipo === "deudas") heads.push("Días atraso", "Desde sit. 1");
+    heads.push("Observaciones");
+    const rows = (p.entidades || []).map(e => {
+      const r = [cell(e.entidad), sitBadge(e.situacion), cell(fmt(e.monto), "num")];
+      if (tipo === "deudas") r.push(cell(e.diasAtrasoPago ? String(e.diasAtrasoPago) : "—", "num"), cell(e.fechaSit1 || "—"));
+      r.push(flags(e));
+      return r;
+    });
+    card.append(table(heads, rows));
+  });
+  return card;
+}
+
+function renderCheques(res) {
+  const card = el("div", {class: "card"});
+  card.append(el("h2", {}, res.denominacion || "(sin denominación)"));
+  card.append(el("div", {class: "sub"}, "Identificación: " + res.identificacion));
+  const rows = [];
+  (res.causales || []).forEach(c => (c.entidades || []).forEach(e => (e.detalle || []).forEach(d => {
+    rows.push([cell(c.causal), cell(String(e.entidad), "num"), cell(String(d.nroCheque), "num"), cell(d.fechaRechazo || "—"),
+      cell(fmt(d.monto), "num"), cell(d.fechaPago || "—"), cell(d.fechaPagoMulta || d.estadoMulta || "—"),
+      cell(d.denomJuridica || "—"), flags(d)]);
+  })));
+  if (!rows.length) card.append(el("div", {class: "msg"}, "Sin cheques rechazados."));
+  else card.append(table(["Causal","Entidad","N° cheque","Rechazo","Monto ($)","Pago","Multa","Persona jurídica","Obs."], rows));
+  return card;
+}
+
+const cuitInput = document.getElementById("cuit");
+cuitInput.addEventListener("input", () => {
+  const d = cuitInput.value.replace(/\D/g, "").slice(0, 11);
+  cuitInput.value = d.length > 10 ? `${d.slice(0,2)}-${d.slice(2,10)}-${d.slice(10)}`
+                  : d.length > 2 ? `${d.slice(0,2)}-${d.slice(2)}` : d;
+});
+
+document.getElementById("f").addEventListener("submit", async ev => {
+  ev.preventDefault();
+  const btn = document.getElementById("btn");
+  btn.disabled = true; btn.textContent = "Consultando…";
+  out.replaceChildren();
+  try {
+    const r = await fetch("/api/consulta", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({cuit: cuitInput.value, tipo: document.getElementById("tipo").value})
+    });
+    const j = await r.json();
+    if (!j.ok) { out.append(el("div", {class: "msg err"}, j.error)); return; }
+    if (!j.dv_valido) out.append(el("div", {class: "msg warn"}, "El dígito verificador del CUIT no coincide; verificá que esté bien escrito."));
+    out.append(j.tipo === "cheques" ? renderCheques(j.data) : renderPeriodos(j.data, j.tipo));
+  } catch (e) {
+    out.append(el("div", {class: "msg err"}, "No se pudo conectar con el servidor local."));
+  } finally {
+    btn.disabled = false; btn.textContent = "Consultar";
+  }
+});
+</script>
+</body>
+</html>
